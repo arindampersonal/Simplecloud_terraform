@@ -22,7 +22,7 @@ stages:
 
   # --------------------------------------------------------
   # STEP 1: Always ask user to confirm the selected action
-  # -------------------------------------------------------
+  # --------------------------------------------------------
 
   - stage: ConfirmAction
     displayName: "Confirm Action"
