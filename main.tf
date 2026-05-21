@@ -10,11 +10,8 @@ terraform {
 provider "azurerm" {
   features {}
   skip_provider_registration = true
-
-  subscription_id = var.subscription_id
-  tenant_id       = var.tenant_id
-  client_id       = var.client_id
-  client_secret   = var.client_secret
+  # No credentials here!
+  # Terraform reads ARM_* env vars automatically from pipeline
 }
 
 resource "azurerm_resource_group" "example" {
