@@ -1,6 +1,6 @@
 parameters:
   - name: action
-    displayName: 'Select Action'
+    displayName: 'Select Action (apply / destroy)'
     type: string
     default: 'apply'
     values:
@@ -21,6 +21,29 @@ variables:
 stages:
 
   # -------------------------------------------------------
+  # STEP 1: Always ask user to confirm the selected action
+  # -------------------------------------------------------
+
+  - stage: ConfirmAction
+    displayName: "Confirm Action"
+    jobs:
+      - job: WaitForConfirmation
+        pool: server
+        steps:
+          - task: ManualValidation@0
+            displayName: "Confirm Selected Action"
+            inputs:
+              instructions: |
+                You are about to run: '${{ parameters.action }}'
+
+                ✅ APPLY  → Creates / updates your Azure infrastructure.
+                ❌ DESTROY → Tears down ALL infrastructure. This cannot be undone.
+
+                Please confirm you selected the correct action before approving.
+              onTimeout: "reject"
+              timeout: "1440"
+
+  # -------------------------------------------------------
   # APPLY FLOW: Plan → Approval → Apply
   # Only runs when action = apply
   # -------------------------------------------------------
@@ -28,6 +51,7 @@ stages:
   - stage: Plan
     displayName: "Terraform Plan"
     condition: eq('${{ parameters.action }}', 'apply')
+    dependsOn: ConfirmAction
     jobs:
       - job: TerraformPlan
         steps:
@@ -65,7 +89,7 @@ stages:
           - task: ManualValidation@0
             displayName: "Approve to proceed with Apply"
             inputs:
-              instructions: "Review the Terraform Plan. Approve to apply changes."
+              instructions: "Review the Terraform Plan above. Approve to apply changes to Azure."
               onTimeout: "reject"
               timeout: "1440"
 
@@ -106,7 +130,7 @@ stages:
   - stage: Destroy
     displayName: "Terraform Destroy"
     condition: eq('${{ parameters.action }}', 'destroy')
-    dependsOn: []
+    dependsOn: ConfirmAction
     jobs:
       - job: TerraformDestroy
         steps:
