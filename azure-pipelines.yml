@@ -7,7 +7,7 @@ pool:
   vmImage: ubuntu-latest
 
 variables:
-  - group: terraform-secrets
+  - group: SimpleCloud_Variable_Group_Secrets
 
 stages:
 
