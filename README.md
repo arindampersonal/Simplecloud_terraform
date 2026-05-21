@@ -73,15 +73,17 @@ Excludes local and sensitive Terraform files:
 
 ### `azure-pipelines.yml`
 
-Defines an Azure DevOps pipeline that runs on the `main` branch.
+Defines an Azure DevOps pipeline that runs on the `main` branch. It accepts a runtime parameter (`action`) to choose between `apply` and `destroy` flows.
 
 Pipeline stages:
 
-1. `Plan`: installs Terraform, runs `terraform init`, and creates a Terraform plan.
-2. `Approval`: pauses the pipeline for manual approval before making changes.
-3. `Apply`: installs Terraform, runs `terraform init`, and applies the Terraform configuration.
+1. `ConfirmAction`: pauses the pipeline for manual validation of the selected action (`apply` or `destroy`).
+2. `Plan`: installs Terraform (v1.7.5), runs `terraform init`, and creates a Terraform plan (runs only for `apply`).
+3. `Approval`: pauses the pipeline for manual approval before making changes (runs only for `apply`).
+4. `Apply`: installs Terraform, runs `terraform init`, and applies the Terraform configuration (runs only for `apply`).
+5. `Destroy`: installs Terraform, runs `terraform init`, and tears down the infrastructure (runs only for `destroy`).
 
-The pipeline references a variable group named `terraform-secrets` for Azure credentials.
+The pipeline references a variable group named `SimpleCloud_Variable_Group_Secrets` for Azure credentials.
 
 Expected secret variables:
 
@@ -133,7 +135,7 @@ This project avoids interactive login prompts by passing service principal crede
 
 For local usage, add the values once in `terraform.tfvars`.
 
-For Azure DevOps, store credentials as secret variables in the `terraform-secrets` variable group.
+For Azure DevOps, store credentials as secret variables in the `SimpleCloud_Variable_Group_Secrets` variable group.
 
 ## Security Notes
 
