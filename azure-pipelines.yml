@@ -11,93 +11,70 @@ variables:
 
 stages:
 
-  # ── STAGE 1: Terraform Plan ──
   - stage: Plan
     displayName: "Terraform Plan"
     jobs:
       - job: TerraformPlan
-        displayName: "Run Terraform Plan"
         steps:
-
-          - task: TerraformInstaller@1
+          - script: |
+              wget -O terraform.zip https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip
+              unzip terraform.zip
+              sudo mv terraform /usr/local/bin/
+              terraform version
             displayName: "Install Terraform"
-            inputs:
-              terraformVersion: "latest"
 
-          - task: TerraformTaskV4@4
+          - script: terraform init
             displayName: "Terraform Init"
-            inputs:
-              provider: "azurerm"
-              command: "init"
-              workingDirectory: "$(System.DefaultWorkingDirectory)"
             env:
               ARM_CLIENT_ID: $(ARM_CLIENT_ID)
               ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
               ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
               ARM_TENANT_ID: $(ARM_TENANT_ID)
 
-          - task: TerraformTaskV4@4
+          - script: terraform plan
             displayName: "Terraform Plan"
-            inputs:
-              provider: "azurerm"
-              command: "plan"
-              workingDirectory: "$(System.DefaultWorkingDirectory)"
-              environmentServiceNameAzureRM: ""
             env:
               ARM_CLIENT_ID: $(ARM_CLIENT_ID)
               ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
               ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
               ARM_TENANT_ID: $(ARM_TENANT_ID)
 
-  # ── STAGE 2: Approval Gate ──
   - stage: Approval
     displayName: "Waiting for Approval"
     dependsOn: Plan
     jobs:
       - job: WaitForApproval
-        displayName: "Manual Approval Required"
         pool: server
         steps:
           - task: ManualValidation@0
             displayName: "Approve to proceed with Apply"
             inputs:
-              notifyUsers: ""
-              instructions: "Review the Terraform Plan output. Approve to apply changes to Azure."
+              instructions: "Review the Terraform Plan. Approve to apply changes."
               onTimeout: "reject"
-              timeout: "1440"  # 24 hours to approve
+              timeout: "1440"
 
-  # ── STAGE 3: Terraform Apply ──
   - stage: Apply
     displayName: "Terraform Apply"
     dependsOn: Approval
     jobs:
       - job: TerraformApply
-        displayName: "Run Terraform Apply"
         steps:
-
-          - task: TerraformInstaller@1
+          - script: |
+              wget -O terraform.zip https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip
+              unzip terraform.zip
+              sudo mv terraform /usr/local/bin/
             displayName: "Install Terraform"
-            inputs:
-              terraformVersion: "latest"
 
-          - task: TerraformTaskV4@4
+          - script: terraform init
             displayName: "Terraform Init"
-            inputs:
-              provider: "azurerm"
-              command: "init"
-              workingDirectory: "$(System.DefaultWorkingDirectory)"
             env:
               ARM_CLIENT_ID: $(ARM_CLIENT_ID)
               ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
               ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
               ARM_TENANT_ID: $(ARM_TENANT_ID)
 
-          - task: TerraformTaskV4@4
+          - script: terraform apply -auto-approve
             displayName: "Terraform Apply"
-            inputs:
-              provider: "azurerm"
-              command: "apply"
-              workingDirectory: "$(System.DefaultWorkingDirectory)"
             env:
               ARM_CLIENT_ID: $(ARM_CLIENT_ID)
               ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
