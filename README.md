@@ -9,6 +9,7 @@ This project contains a small Terraform setup for deploying Azure infrastructure
 - Stores reusable Terraform input values in a separate `terraform.tfvars` file.
 - Keeps secrets and Terraform state files out of source control through `.gitignore`.
 - Creates an Azure resource group named `my-resource-group` in the `East US` region.
+- Uses Terraform import blocks to bring existing Azure resources into the Terraform state.
 - Includes an Azure DevOps pipeline with separate plan, approval, and apply stages.
 
 ## Project Structure
@@ -18,6 +19,7 @@ This project contains a small Terraform setup for deploying Azure infrastructure
 |-- main.tf
 |-- variables.tf
 |-- terraform.tfvars
+|-- imports.tf
 |-- azure-pipelines.yml
 |-- .gitignore
 |-- .terraform.lock.hcl
@@ -61,6 +63,12 @@ client_secret   = "your-client-secret"
 ```
 
 Do not commit this file because it contains credentials.
+
+### `imports.tf`
+
+Uses Terraform 1.5+ declarative `import` blocks to seamlessly bring existing Azure infrastructure under Terraform management. Currently configured to import:
+- `my-resource-group`
+- `my-vnet-resource-group`
 
 ### `.gitignore`
 
@@ -147,10 +155,10 @@ For Azure DevOps, store credentials as secret variables in the `SimpleCloud_Vari
 
 ## Current Infrastructure
 
-At present, this project deploys:
+At present, this project deploys and manages:
 
-- One Azure resource group:
-  - Name: `my-resource-group`
-  - Location: `East US`
+- Two Azure resource groups:
+  - `my-resource-group` (Managed in `main.tf`, location: `East US`)
+  - `my-vnet-resource-group` (Imported via `imports.tf`)
 
 More resources can be added to `main.tf` or split into additional `.tf` files as the project grows.
