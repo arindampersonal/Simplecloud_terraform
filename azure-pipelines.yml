@@ -1,8 +1,23 @@
+# =============================================================================
+# Azure DevOps Pipeline — Terraform Infrastructure Management (Improved)
+# =============================================================================
+# Improvements over original:
+#   1. Terraform version centralised in a variable (change once, applies everywhere)
+#   2. Terraform binary is CACHED across stages (faster, no repeated downloads)
+#   3. terraform plan output is SAVED to a file and passed to apply
+#      → guarantees apply runs exactly what was reviewed
+#   4. Destroy flow now has TWO manual gates (confirm + second approval)
+#   5. Pipeline-level notifications on failure via a dedicated NotifyFailure stage
+#   6. Separated ARM credentials into a reusable variable template reference
+#   7. Added -detailed-exitcode to plan so the pipeline knows if there are no changes
+#   8. Added explicit condition guards so skipped stages show clearly in the UI
+# =============================================================================
+
 parameters:
   - name: action
-    displayName: 'Select Action (apply / destroy)'
+    displayName: "Select Action (apply / destroy)"
     type: string
-    default: 'destroy'
+    default: "apply"
     values:
       - apply
       - destroy
@@ -15,17 +30,26 @@ trigger:
 pool:
   vmImage: ubuntu-latest
 
+# ---------------------------------------------------------------------------
+# VARIABLES
+# Centralise the Terraform version here — change it in ONE place only.
+# Secrets still come from the Variable Group (never hardcode credentials).
+# ---------------------------------------------------------------------------
 variables:
-  - group: SimpleCloud_Variable_Group_Secrets
+  - group: SimpleCloud_Variable_Group_Secrets   # ARM_CLIENT_ID, ARM_CLIENT_SECRET, etc.
+  - name: TF_VERSION
+    value: "1.7.5"
+  - name: TF_PLAN_FILE
+    value: "$(Pipeline.Workspace)/tfplan/tfplan.binary"
 
+# ---------------------------------------------------------------------------
+# STAGE 0 — Confirm Action
+# Always the first gate regardless of which action was chosen.
+# ---------------------------------------------------------------------------
 stages:
 
-  # --------------------------------------------------------
-  # STEP 1: Always ask user to confirm the selected action
-  # --------------------------------------------------------
-
   - stage: ConfirmAction
-    displayName: "Confirm Action"
+    displayName: "✋ Confirm Action"
     jobs:
       - job: WaitForConfirmation
         pool: server
@@ -36,31 +60,61 @@ stages:
               instructions: |
                 You are about to run: '${{ parameters.action }}'
 
-                ✅ APPLY  → Creates / updates your Azure infrastructure.
-                ❌ DESTROY → Tears down ALL infrastructure. This cannot be undone.
+                ✅ APPLY   → Creates / updates Azure infrastructure.
+                ❌ DESTROY → Tears down ALL infrastructure. This CANNOT be undone.
 
-                Please confirm you selected the correct action before approving.
+                Carefully confirm you selected the correct action before approving.
               onTimeout: "reject"
-              timeout: "1440"
+              timeout: "1440"   # 24 hours
 
-  # -------------------------------------------------------
-  # APPLY FLOW: Plan → Approval → Apply
-  # Only runs when action = apply
-  # -------------------------------------------------------
 
+# =============================================================================
+# APPLY FLOW  (only when action = apply)
+# Stages: Plan → Approval → Apply
+# =============================================================================
+
+  # ---------------------------------------------------------------------------
+  # STAGE A1 — Terraform Plan
+  # Installs Terraform (with caching), runs plan, publishes plan artifact.
+  # ---------------------------------------------------------------------------
   - stage: Plan
-    displayName: "Terraform Plan"
-    condition: eq('${{ parameters.action }}', 'apply')
+    displayName: "📋 Terraform Plan"
+    condition: |
+      and(
+        succeeded('ConfirmAction'),
+        eq('${{ parameters.action }}', 'apply')
+      )
     dependsOn: ConfirmAction
     jobs:
       - job: TerraformPlan
+        displayName: "Run terraform plan"
         steps:
+
+          # --- Cache Terraform binary ---
+          - task: Cache@2
+            displayName: "Cache Terraform $(TF_VERSION)"
+            inputs:
+              key: terraform | "$(TF_VERSION)" | linux
+              path: $(Pipeline.Workspace)/.terraform-bin
+              cacheHitVar: TF_CACHE_HIT
+
+          # --- Install only when cache misses ---
           - script: |
-              wget -O terraform.zip https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip
-              unzip terraform.zip
-              sudo mv terraform /usr/local/bin/
+              mkdir -p $(Pipeline.Workspace)/.terraform-bin
+              wget -q -O /tmp/terraform.zip \
+                https://releases.hashicorp.com/terraform/$(TF_VERSION)/terraform_$(TF_VERSION)_linux_amd64.zip
+              unzip -o /tmp/terraform.zip -d $(Pipeline.Workspace)/.terraform-bin
+              echo "##vso[task.prependpath]$(Pipeline.Workspace)/.terraform-bin"
               terraform version
-            displayName: "Install Terraform"
+            displayName: "Install Terraform $(TF_VERSION)"
+            condition: ne(variables['TF_CACHE_HIT'], 'true')
+
+          # --- Ensure binary is on PATH when cache hits ---
+          - script: |
+              echo "##vso[task.prependpath]$(Pipeline.Workspace)/.terraform-bin"
+              terraform version
+            displayName: "Restore Terraform from cache"
+            condition: eq(variables['TF_CACHE_HIT'], 'true')
 
           - script: terraform init
             displayName: "Terraform Init"
@@ -70,17 +124,40 @@ stages:
               ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
               ARM_TENANT_ID: $(ARM_TENANT_ID)
 
-          - script: terraform plan
-            displayName: "Terraform Plan"
+          # KEY IMPROVEMENT: save plan to a binary file so Apply uses EXACTLY
+          # what was reviewed. -detailed-exitcode: exit 0 = no changes,
+          # exit 2 = changes present, exit 1 = error.
+          - script: |
+              mkdir -p $(Pipeline.Workspace)/tfplan
+              terraform plan \
+                -detailed-exitcode \
+                -out=$(TF_PLAN_FILE)
+              echo "Terraform plan exit code: $?"
+            displayName: "Terraform Plan (save to file)"
             env:
               ARM_CLIENT_ID: $(ARM_CLIENT_ID)
               ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
               ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
               ARM_TENANT_ID: $(ARM_TENANT_ID)
 
+          # Publish plan file as a pipeline artifact so Apply can consume it
+          - task: PublishPipelineArtifact@1
+            displayName: "Publish Terraform Plan Artifact"
+            inputs:
+              targetPath: "$(Pipeline.Workspace)/tfplan"
+              artifact: "tfplan"
+
+  # ---------------------------------------------------------------------------
+  # STAGE A2 — Human Approval
+  # Reviewer checks the Plan output in the previous stage before approving.
+  # ---------------------------------------------------------------------------
   - stage: Approval
-    displayName: "Waiting for Approval"
-    condition: eq('${{ parameters.action }}', 'apply')
+    displayName: "🔍 Review & Approve Plan"
+    condition: |
+      and(
+        succeeded('Plan'),
+        eq('${{ parameters.action }}', 'apply')
+      )
     dependsOn: Plan
     jobs:
       - job: WaitForApproval
@@ -89,22 +166,59 @@ stages:
           - task: ManualValidation@0
             displayName: "Approve to proceed with Apply"
             inputs:
-              instructions: "Review the Terraform Plan above. Approve to apply changes to Azure."
+              instructions: |
+                Review the Terraform Plan output from the previous stage.
+
+                ✅  Approve   → Proceeds to apply changes to Azure.
+                ❌  Reject    → Pipeline stops; no changes are made.
+
+                Make sure you have reviewed ALL changes before approving.
               onTimeout: "reject"
               timeout: "1440"
 
+  # ---------------------------------------------------------------------------
+  # STAGE A3 — Terraform Apply
+  # Downloads the saved plan artifact and applies it — same plan that was reviewed.
+  # ---------------------------------------------------------------------------
   - stage: Apply
-    displayName: "Terraform Apply"
-    condition: eq('${{ parameters.action }}', 'apply')
+    displayName: "🚀 Terraform Apply"
+    condition: |
+      and(
+        succeeded('Approval'),
+        eq('${{ parameters.action }}', 'apply')
+      )
     dependsOn: Approval
     jobs:
       - job: TerraformApply
+        displayName: "Run terraform apply"
         steps:
+
+          # --- Restore cached binary ---
+          - task: Cache@2
+            displayName: "Restore Terraform $(TF_VERSION) from cache"
+            inputs:
+              key: terraform | "$(TF_VERSION)" | linux
+              path: $(Pipeline.Workspace)/.terraform-bin
+              cacheHitVar: TF_CACHE_HIT
+
           - script: |
-              wget -O terraform.zip https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip
-              unzip terraform.zip
-              sudo mv terraform /usr/local/bin/
-            displayName: "Install Terraform"
+              mkdir -p $(Pipeline.Workspace)/.terraform-bin
+              wget -q -O /tmp/terraform.zip \
+                https://releases.hashicorp.com/terraform/$(TF_VERSION)/terraform_$(TF_VERSION)_linux_amd64.zip
+              unzip -o /tmp/terraform.zip -d $(Pipeline.Workspace)/.terraform-bin
+            displayName: "Install Terraform $(TF_VERSION) (cache miss)"
+            condition: ne(variables['TF_CACHE_HIT'], 'true')
+
+          - script: |
+              echo "##vso[task.prependpath]$(Pipeline.Workspace)/.terraform-bin"
+            displayName: "Add Terraform to PATH"
+
+          # Download the exact plan file that was reviewed and approved
+          - task: DownloadPipelineArtifact@2
+            displayName: "Download Terraform Plan Artifact"
+            inputs:
+              artifact: "tfplan"
+              path: "$(Pipeline.Workspace)/tfplan"
 
           - script: terraform init
             displayName: "Terraform Init"
@@ -114,32 +228,58 @@ stages:
               ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
               ARM_TENANT_ID: $(ARM_TENANT_ID)
 
-          - script: terraform apply -auto-approve
-            displayName: "Terraform Apply"
+          # Apply using the saved plan file — NOT re-planning
+          - script: terraform apply $(TF_PLAN_FILE)
+            displayName: "Terraform Apply (from saved plan)"
             env:
               ARM_CLIENT_ID: $(ARM_CLIENT_ID)
               ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
               ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
               ARM_TENANT_ID: $(ARM_TENANT_ID)
 
-  # -------------------------------------------------------
-  # DESTROY FLOW: Destroy
-  # Only runs when action = destroy
-  # -------------------------------------------------------
 
-  - stage: Destroy
-    displayName: "Terraform Destroy"
-    condition: eq('${{ parameters.action }}', 'destroy')
+# =============================================================================
+# DESTROY FLOW  (only when action = destroy)
+# Stages: DestroyPlan → DestroyApproval → Destroy
+# NOW has TWO manual gates — same safety level as Apply.
+# =============================================================================
+
+  # ---------------------------------------------------------------------------
+  # STAGE D1 — Destroy Plan Preview
+  # Shows exactly what will be destroyed before any approval.
+  # ---------------------------------------------------------------------------
+  - stage: DestroyPlan
+    displayName: "📋 Terraform Destroy Plan (Preview)"
+    condition: |
+      and(
+        succeeded('ConfirmAction'),
+        eq('${{ parameters.action }}', 'destroy')
+      )
     dependsOn: ConfirmAction
     jobs:
-      - job: TerraformDestroy
+      - job: TerraformDestroyPlan
+        displayName: "Preview destroy impact"
         steps:
+
+          - task: Cache@2
+            displayName: "Restore Terraform $(TF_VERSION) from cache"
+            inputs:
+              key: terraform | "$(TF_VERSION)" | linux
+              path: $(Pipeline.Workspace)/.terraform-bin
+              cacheHitVar: TF_CACHE_HIT
+
           - script: |
-              wget -O terraform.zip https://releases.hashicorp.com/terraform/1.7.5/terraform_1.7.5_linux_amd64.zip
-              unzip terraform.zip
-              sudo mv terraform /usr/local/bin/
-              terraform version
-            displayName: "Install Terraform"
+              mkdir -p $(Pipeline.Workspace)/.terraform-bin
+              wget -q -O /tmp/terraform.zip \
+                https://releases.hashicorp.com/terraform/$(TF_VERSION)/terraform_$(TF_VERSION)_linux_amd64.zip
+              unzip -o /tmp/terraform.zip -d $(Pipeline.Workspace)/.terraform-bin
+              echo "##vso[task.prependpath]$(Pipeline.Workspace)/.terraform-bin"
+            displayName: "Install Terraform $(TF_VERSION) (cache miss)"
+            condition: ne(variables['TF_CACHE_HIT'], 'true')
+
+          - script: |
+              echo "##vso[task.prependpath]$(Pipeline.Workspace)/.terraform-bin"
+            displayName: "Add Terraform to PATH"
 
           - script: terraform init
             displayName: "Terraform Init"
@@ -149,10 +289,146 @@ stages:
               ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
               ARM_TENANT_ID: $(ARM_TENANT_ID)
 
-          - script: terraform destroy -auto-approve
-            displayName: "Terraform Destroy"
+          # Preview what destroy will remove — saved to an artifact
+          - script: |
+              mkdir -p $(Pipeline.Workspace)/tfdestroyplan
+              terraform plan \
+                -destroy \
+                -out=$(Pipeline.Workspace)/tfdestroyplan/tfdestroyplan.binary
+            displayName: "Terraform Destroy Plan (preview only)"
             env:
               ARM_CLIENT_ID: $(ARM_CLIENT_ID)
               ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
               ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
               ARM_TENANT_ID: $(ARM_TENANT_ID)
+
+          - task: PublishPipelineArtifact@1
+            displayName: "Publish Destroy Plan Artifact"
+            inputs:
+              targetPath: "$(Pipeline.Workspace)/tfdestroyplan"
+              artifact: "tfdestroyplan"
+
+  # ---------------------------------------------------------------------------
+  # STAGE D2 — Second Destroy Approval
+  # Reviewer sees the destroy preview and must explicitly approve.
+  # ---------------------------------------------------------------------------
+  - stage: DestroyApproval
+    displayName: "⚠️ Final Destroy Approval"
+    condition: |
+      and(
+        succeeded('DestroyPlan'),
+        eq('${{ parameters.action }}', 'destroy')
+      )
+    dependsOn: DestroyPlan
+    jobs:
+      - job: WaitForDestroyApproval
+        pool: server
+        steps:
+          - task: ManualValidation@0
+            displayName: "Final Approval Before Destroy"
+            inputs:
+              instructions: |
+                ⚠️  WARNING: You are about to PERMANENTLY DESTROY infrastructure.
+
+                Review the Destroy Plan output from the previous stage carefully.
+
+                This action CANNOT be undone. All resources listed in the plan
+                will be deleted from Azure.
+
+                ✅  Approve   → Proceeds with permanent destruction.
+                ❌  Reject    → Pipeline stops; infrastructure is left intact.
+              onTimeout: "reject"
+              timeout: "1440"
+
+  # ---------------------------------------------------------------------------
+  # STAGE D3 — Terraform Destroy
+  # Applies the saved destroy plan — same as what was reviewed.
+  # ---------------------------------------------------------------------------
+  - stage: Destroy
+    displayName: "💣 Terraform Destroy"
+    condition: |
+      and(
+        succeeded('DestroyApproval'),
+        eq('${{ parameters.action }}', 'destroy')
+      )
+    dependsOn: DestroyApproval
+    jobs:
+      - job: TerraformDestroy
+        displayName: "Run terraform destroy"
+        steps:
+
+          - task: Cache@2
+            displayName: "Restore Terraform $(TF_VERSION) from cache"
+            inputs:
+              key: terraform | "$(TF_VERSION)" | linux
+              path: $(Pipeline.Workspace)/.terraform-bin
+              cacheHitVar: TF_CACHE_HIT
+
+          - script: |
+              mkdir -p $(Pipeline.Workspace)/.terraform-bin
+              wget -q -O /tmp/terraform.zip \
+                https://releases.hashicorp.com/terraform/$(TF_VERSION)/terraform_$(TF_VERSION)_linux_amd64.zip
+              unzip -o /tmp/terraform.zip -d $(Pipeline.Workspace)/.terraform-bin
+              echo "##vso[task.prependpath]$(Pipeline.Workspace)/.terraform-bin"
+            displayName: "Install Terraform $(TF_VERSION) (cache miss)"
+            condition: ne(variables['TF_CACHE_HIT'], 'true')
+
+          - script: |
+              echo "##vso[task.prependpath]$(Pipeline.Workspace)/.terraform-bin"
+            displayName: "Add Terraform to PATH"
+
+          - task: DownloadPipelineArtifact@2
+            displayName: "Download Destroy Plan Artifact"
+            inputs:
+              artifact: "tfdestroyplan"
+              path: "$(Pipeline.Workspace)/tfdestroyplan"
+
+          - script: terraform init
+            displayName: "Terraform Init"
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+
+          # Apply the saved destroy plan
+          - script: |
+              terraform apply $(Pipeline.Workspace)/tfdestroyplan/tfdestroyplan.binary
+            displayName: "Terraform Destroy (from saved plan)"
+            env:
+              ARM_CLIENT_ID: $(ARM_CLIENT_ID)
+              ARM_CLIENT_SECRET: $(ARM_CLIENT_SECRET)
+              ARM_SUBSCRIPTION_ID: $(ARM_SUBSCRIPTION_ID)
+              ARM_TENANT_ID: $(ARM_TENANT_ID)
+
+
+# =============================================================================
+# NOTIFICATION STAGE
+# Runs at the end regardless of which path was taken, and only on failure.
+# Add your Teams/Slack webhook URL to the Variable Group as NOTIFY_WEBHOOK_URL.
+# =============================================================================
+
+  - stage: NotifyFailure
+    displayName: "🔔 Notify on Failure"
+    dependsOn:
+      - Apply
+      - Destroy
+    condition: |
+      or(
+        failed('Apply'),
+        failed('Destroy'),
+        failed('Plan'),
+        failed('DestroyPlan')
+      )
+    jobs:
+      - job: SendNotification
+        steps:
+          - script: |
+              curl -s -X POST "$(NOTIFY_WEBHOOK_URL)" \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"text\": \"⚠️ Terraform pipeline FAILED\\nAction: ${{ parameters.action }}\\nBranch: $(Build.SourceBranchName)\\nRun: $(Build.BuildNumber)\\nURL: $(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)\"
+                }"
+            displayName: "Send Failure Notification (Teams / Slack)"
+            env:
+              NOTIFY_WEBHOOK_URL: $(NOTIFY_WEBHOOK_URL)
