@@ -1,164 +1,213 @@
 # Simplecloud Terraform
 
-This project contains a small Terraform setup for deploying Azure infrastructure with the `azurerm` provider. It is configured for non-interactive authentication so Terraform can run locally or from Azure DevOps without prompting for `az login`.
+A compact Terraform project for managing Azure infrastructure with the
+HashiCorp AzureRM provider and an Azure DevOps pipeline.
 
-## Features
+The current configuration manages two Azure resource groups in `East US`, stores
+Terraform state in an Azure Storage backend, and uses standard Azure service
+principal environment variables for non-interactive authentication.
 
-- Uses the official HashiCorp AzureRM provider.
-- Authenticates with an Azure service principal using tenant ID, subscription ID, client ID, and client secret.
-- Stores reusable Terraform input values in a separate `terraform.tfvars` file.
-- Keeps secrets and Terraform state files out of source control through `.gitignore`.
-- Creates an Azure resource group named `my-resource-group` in the `East US` region.
-- Uses Terraform import blocks to bring existing Azure resources into the Terraform state.
-- Includes an Azure DevOps pipeline with separate plan, approval, and apply stages.
+## What This Project Does
 
-## Project Structure
+- Uses Terraform with the `hashicorp/azurerm` provider.
+- Authenticates through `ARM_*` environment variables instead of hardcoded
+  credentials.
+- Stores Terraform state remotely in an Azure Storage Account backend.
+- Creates and manages two Azure resource groups.
+- Includes an Azure DevOps pipeline with separate apply and destroy flows.
+- Saves Terraform plan files as pipeline artifacts so apply/destroy runs the
+  reviewed plan.
+- Uses manual approval gates before changing or destroying infrastructure.
+- Sends a failure notification through a configurable webhook.
+
+## Repository Structure
 
 ```text
 .
 |-- main.tf
+|-- backend.tf
 |-- variables.tf
-|-- terraform.tfvars
-|-- imports.tf
 |-- azure-pipelines.yml
 |-- .gitignore
 |-- .terraform.lock.hcl
+|-- README.md
 ```
 
 ### `main.tf`
 
-Defines the Terraform provider and Azure resource.
+Defines the AzureRM provider and the Azure resources managed by this project.
 
-The AzureRM provider uses these variables:
-
-- `subscription_id`
-- `tenant_id`
-- `client_id`
-- `client_secret`
-
-The current resource definition creates one Azure resource group:
+Current resources:
 
 ```hcl
 resource "azurerm_resource_group" "example" {
   name     = "my-resource-group"
   location = "East US"
 }
+
+resource "azurerm_resource_group" "vnet-resource" {
+  name     = "my-vnet-resource-group"
+  location = "East US"
+}
 ```
+
+The provider block does not contain credentials. Terraform automatically reads
+Azure authentication values from environment variables such as
+`ARM_CLIENT_ID`, `ARM_CLIENT_SECRET`, `ARM_SUBSCRIPTION_ID`, and
+`ARM_TENANT_ID`.
+
+### `backend.tf`
+
+Configures remote Terraform state using the AzureRM backend:
+
+```hcl
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "tfstate-rg"
+    storage_account_name = "tfstatesimplecloud"
+    container_name       = "tfstate"
+    key                  = "terraform.tfstate"
+  }
+}
+```
+
+The backend resources must already exist before running `terraform init`.
 
 ### `variables.tf`
 
-Declares all input variables required by the provider. The `client_secret` variable is marked as sensitive so Terraform hides it in normal CLI output.
-
-### `terraform.tfvars`
-
-Stores the actual variable values for local runs. Terraform automatically loads this file, so you only need to enter the values once.
-
-Example format:
-
-```hcl
-subscription_id = "your-subscription-id"
-tenant_id       = "your-tenant-id"
-client_id       = "your-client-id"
-client_secret   = "your-client-secret"
-```
-
-Do not commit this file because it contains credentials.
-
-### `imports.tf`
-
-Uses Terraform 1.5+ declarative `import` blocks to seamlessly bring existing Azure infrastructure under Terraform management. Currently configured to import:
-- `my-resource-group`
-- `my-vnet-resource-group`
-
-### `.gitignore`
-
-Excludes local and sensitive Terraform files:
-
-- `terraform.tfvars`
-- `*.tfstate`
-- `*.tfstate.*`
-- `.terraform/`
+This file is currently empty because the active configuration does not define
+custom input variables. Authentication is handled through environment variables.
 
 ### `azure-pipelines.yml`
 
-Defines an Azure DevOps pipeline that runs on the `main` branch. It accepts a runtime parameter (`action`) to choose between `apply` and `destroy` flows.
+Defines the Azure DevOps CI/CD flow.
+
+Pipeline highlights:
+
+- Runs on changes to the `main` branch.
+- Accepts a runtime `action` parameter:
+  - `apply`
+  - `destroy`
+- Uses Terraform `1.7.5`.
+- Caches the Terraform binary between stages.
+- Uses the variable group `SimpleCloud_Variable_Group_Secrets`.
+- Publishes binary plan files as pipeline artifacts.
+- Applies the exact plan that was reviewed and approved.
+- Requires manual confirmation before either action.
+- Requires an additional approval before apply or destroy.
+- Sends a failure notification through `NOTIFY_WEBHOOK_URL`.
 
 Pipeline stages:
 
-1. `ConfirmAction`: pauses the pipeline for manual validation of the selected action (`apply` or `destroy`).
-2. `Plan`: installs Terraform (v1.7.5), runs `terraform init`, and creates a Terraform plan (runs only for `apply`).
-3. `Approval`: pauses the pipeline for manual approval before making changes (runs only for `apply`).
-4. `Apply`: installs Terraform, runs `terraform init`, and applies the Terraform configuration (runs only for `apply`).
-5. `Destroy`: installs Terraform, runs `terraform init`, and tears down the infrastructure (runs only for `destroy`).
+| Stage | Runs For | Purpose |
+| --- | --- | --- |
+| `ConfirmAction` | apply, destroy | Manual confirmation of selected action |
+| `Plan` | apply | Runs `terraform plan` and publishes `tfplan` |
+| `Approval` | apply | Manual approval after reviewing the plan |
+| `Apply` | apply | Applies the saved plan artifact |
+| `DestroyPlan` | destroy | Creates and publishes a destroy preview |
+| `DestroyApproval` | destroy | Final manual approval before destruction |
+| `Destroy` | destroy | Applies the saved destroy plan |
+| `NotifyFailure` | failures | Sends a webhook notification if plan/apply/destroy fails |
 
-The pipeline references a variable group named `SimpleCloud_Variable_Group_Secrets` for Azure credentials.
+## Managed Infrastructure
 
-Expected secret variables:
+At the moment, this project manages:
 
-- `ARM_CLIENT_ID`
-- `ARM_CLIENT_SECRET`
-- `ARM_SUBSCRIPTION_ID`
-- `ARM_TENANT_ID`
+| Terraform Resource | Azure Name | Location |
+| --- | --- | --- |
+| `azurerm_resource_group.example` | `my-resource-group` | `East US` |
+| `azurerm_resource_group.vnet-resource` | `my-vnet-resource-group` | `East US` |
 
 ## Prerequisites
 
-- Terraform installed locally.
+- Terraform installed locally, preferably the same version used by the pipeline:
+  `1.7.5`.
 - An Azure subscription.
-- An Azure service principal with permissions to create resources in the target subscription.
-- The following service principal details:
-  - Subscription ID
-  - Tenant ID
-  - Client ID
-  - Client secret
+- An Azure service principal with permission to manage the target resources.
+- Existing Azure Storage backend resources:
+  - Resource group: `tfstate-rg`
+  - Storage account: `tfstatesimplecloud`
+  - Blob container: `tfstate`
+- Azure DevOps variable group: `SimpleCloud_Variable_Group_Secrets`.
+
+Required Azure authentication variables:
+
+```text
+ARM_CLIENT_ID
+ARM_CLIENT_SECRET
+ARM_SUBSCRIPTION_ID
+ARM_TENANT_ID
+```
+
+Optional notification variable:
+
+```text
+NOTIFY_WEBHOOK_URL
+```
 
 ## Local Usage
 
-Initialize Terraform:
+Set the Azure service principal environment variables before running Terraform.
+
+PowerShell example:
+
+```powershell
+$env:ARM_CLIENT_ID = "<client-id>"
+$env:ARM_CLIENT_SECRET = "<client-secret>"
+$env:ARM_SUBSCRIPTION_ID = "<subscription-id>"
+$env:ARM_TENANT_ID = "<tenant-id>"
+```
+
+Initialize Terraform and connect to the remote backend:
 
 ```powershell
 terraform init
 ```
 
-Review the planned changes:
+Preview changes:
 
 ```powershell
 terraform plan
 ```
 
-Apply the infrastructure:
+Apply changes:
 
 ```powershell
 terraform apply
 ```
 
-Destroy the infrastructure when no longer needed:
+Destroy managed infrastructure:
 
 ```powershell
 terraform destroy
 ```
 
-## Authentication
+## Azure DevOps Usage
 
-This project avoids interactive login prompts by passing service principal credentials directly into the AzureRM provider through Terraform variables.
-
-For local usage, add the values once in `terraform.tfvars`.
-
-For Azure DevOps, store credentials as secret variables in the `SimpleCloud_Variable_Group_Secrets` variable group.
+1. Create or update the `SimpleCloud_Variable_Group_Secrets` variable group.
+2. Add the required `ARM_*` variables as secrets.
+3. Add `NOTIFY_WEBHOOK_URL` if failure notifications should be sent.
+4. Run the pipeline from Azure DevOps.
+5. Choose the desired `action`: `apply` or `destroy`.
+6. Review the generated Terraform plan.
+7. Approve the manual validation step only when the plan is correct.
 
 ## Security Notes
 
-- Never commit `terraform.tfvars`.
-- Never commit `.tfstate` files because they may contain sensitive information.
-- Rotate the client secret if it is exposed.
-- Prefer secret variables or secure variable groups in CI/CD systems.
-- For production usage, consider remote Terraform state storage with state locking, such as Azure Storage with blob locking support.
+- Do not hardcode Azure credentials in Terraform files.
+- Keep service principal secrets in Azure DevOps secret variables.
+- Do not commit local `.tfvars` files containing credentials.
+- Do not commit local `.tfstate` files because state can contain sensitive data.
+- Rotate the service principal secret immediately if it is exposed.
+- Prefer remote state with locking for shared environments.
+- Review destroy plans carefully before approving the final destroy stage.
 
-## Current Infrastructure
+## Notes For Future Changes
 
-At present, this project deploys and manages:
-
-- Two Azure resource groups:
-  - `my-resource-group` (Managed in `main.tf`, location: `East US`)
-  - `my-vnet-resource-group` (Imported via `imports.tf`)
-
-More resources can be added to `main.tf` or split into additional `.tf` files as the project grows.
+- Add new Azure resources in `main.tf` or split them into separate `.tf` files as
+  the project grows.
+- Add variables to `variables.tf` when values need to differ across
+  environments.
+- Keep the pipeline Terraform version and local Terraform version aligned.
+- If backend settings change, run `terraform init -reconfigure`.
