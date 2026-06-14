@@ -9,7 +9,6 @@ terraform {
 
 provider "azurerm" {
   features {}
-  skip_provider_registration = true
   # No credentials here!
   # Terraform reads ARM_* env vars automatically from pipeline
 }
