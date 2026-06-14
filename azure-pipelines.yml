@@ -105,16 +105,20 @@ stages:
                 https://releases.hashicorp.com/terraform/$(TF_VERSION)/terraform_$(TF_VERSION)_linux_amd64.zip
               unzip -o /tmp/terraform.zip -d $(Pipeline.Workspace)/.terraform-bin
               echo "##vso[task.prependpath]$(Pipeline.Workspace)/.terraform-bin"
-              terraform version
             displayName: "Install Terraform $(TF_VERSION)"
             condition: ne(variables['TF_CACHE_HIT'], 'true')
 
-          # --- Ensure binary is on PATH when cache hits ---
+          # --- Ensure binary is on PATH (runs for BOTH cache hit and cache miss) ---
+          # NOTE: ##vso[task.prependpath] only takes effect in the NEXT step,
+          # so PATH setup and terraform version must always be in separate steps.
           - script: |
               echo "##vso[task.prependpath]$(Pipeline.Workspace)/.terraform-bin"
-              terraform version
-            displayName: "Restore Terraform from cache"
+            displayName: "Add Terraform to PATH"
             condition: eq(variables['TF_CACHE_HIT'], 'true')
+
+          # --- Verify terraform is available (PATH is now set from previous step) ---
+          - script: terraform version
+            displayName: "Verify Terraform on PATH"
 
           - script: terraform init
             displayName: "Terraform Init"
@@ -206,9 +210,11 @@ stages:
               wget -q -O /tmp/terraform.zip \
                 https://releases.hashicorp.com/terraform/$(TF_VERSION)/terraform_$(TF_VERSION)_linux_amd64.zip
               unzip -o /tmp/terraform.zip -d $(Pipeline.Workspace)/.terraform-bin
+              echo "##vso[task.prependpath]$(Pipeline.Workspace)/.terraform-bin"
             displayName: "Install Terraform $(TF_VERSION) (cache miss)"
             condition: ne(variables['TF_CACHE_HIT'], 'true')
 
+          # PATH update only takes effect in the NEXT step — always run this.
           - script: |
               echo "##vso[task.prependpath]$(Pipeline.Workspace)/.terraform-bin"
             displayName: "Add Terraform to PATH"
