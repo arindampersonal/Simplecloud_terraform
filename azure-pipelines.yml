@@ -2,7 +2,7 @@ parameters:
   - name: action
     displayName: 'Select Action (apply / destroy)'
     type: string
-    default: 'apply'
+    default: 'destroy'
     values:
       - apply
       - destroy
