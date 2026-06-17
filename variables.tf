@@ -9,3 +9,12 @@ variable "rg_name_prefix" {
   description = "Prefix for the resource group names."
   default     = "my-app"
 }
+
+variable "common_tags" {
+  type        = map(string)
+  description = "Common tags to apply to all resources."
+  default = {
+    Environment = "Dev"
+    Project     = "Infrastructure"
+  }
+}

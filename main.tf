@@ -16,17 +16,11 @@ provider "azurerm" {
 resource "azurerm_resource_group" "example" {
   name     = "${var.rg_name_prefix}-rg-example"
   location = var.location
-  tags = {
-    Environment = "Dev"
-    Project     = "Infrastructure"
-  }
+  tags     = var.common_tags
 }
 
 resource "azurerm_resource_group" "vnet_resource" {
   name     = "${var.rg_name_prefix}-rg-network"
   location = var.location
-  tags = {
-    Environment = "Dev"
-    Project     = "Infrastructure"
-  }
+  tags     = var.common_tags
 }
