@@ -133,10 +133,24 @@ stages:
           # exit 2 = changes present, exit 1 = error.
           - script: |
               mkdir -p $(Pipeline.Workspace)/tfplan
+
+              set +e
               terraform plan \
                 -detailed-exitcode \
                 -out=$(TF_PLAN_FILE)
-              echo "Terraform plan exit code: $?"
+
+              EXIT_CODE=$?
+
+              if [ $EXIT_CODE -eq 1 ]; then
+                echo "Terraform plan failed"
+                exit 1
+              elif [ $EXIT_CODE -eq 2 ]; then
+                echo "Terraform changes detected"
+                exit 0
+              else
+                echo "No infrastructure changes detected"
+                exit 0
+              fi
             displayName: "Terraform Plan (save to file)"
             env:
               ARM_CLIENT_ID: $(ARM_CLIENT_ID)
